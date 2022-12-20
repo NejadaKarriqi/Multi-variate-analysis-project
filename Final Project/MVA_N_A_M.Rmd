@@ -1,0 +1,69 @@
+---
+title: "outliers"
+output:
+  pdf_document: default
+  html_document: default
+---
+#Exploratory Analysis
+
+The first basic step to do once the data is loaded is a basic **exploratory analysis**.
+We can see that our dataset contains 186 rows (countries) with 27 numerical features and 1 categorical indicator (geographical region).
+
+Instead of going through all the variables we can focus on two of the most interesting ones, `Score` and `Region`.
+
+```{r summary.score}
+data <- read.delim("MVA-dataset.csv", sep=",",row.names = 1, header = TRUE)
+hist(data$Score) 
+```
+We can see how the Index of Economic Freedom (`Score`) roughly follows a $\mathcal{N}(60,125)$.
+On the low extreme we have the outlier `North Korea` while, on the other hand, `Hong Kong` is the most *economically free* country.
+
+```{r summary.region}
+table(data$Region)
+```
+
+Countries are divided in 4 `Region`s with a similar number of components. (except `Middle East & N Africa`).  So, now that we have some general information, lets continue with pre-processing.
+
+##Missing values
+Our dataset contains many missing values and to decide how to deal with them we used three different methods: kNN, random forest and mice. All of those generated different results, but after analyzing and comparing the imputed values with the real values that we found on the internet, we decided that the method which performs better is the kNN. Before imputing we decided to delete some variables becuase more than 60% of their information were missing values. 
+
+```{r dataset, include=FALSE}
+knitr::opts_chunk$set(message = TRUE)
+sapply(data,"class")
+dataset <- data[-79,][-88,][-98,][-151,][-158,]
+summary(dataset)
+```
+
+
+```{r Imputation }
+
+library(DMwR)
+knn.imput <-knnImputation(dataset, k=1, scale = T)
+```
+
+## Outlier detection
+
+After imputing missing values comes the outlier detection. To detect the outliers, we used two different methods to be sure about the result. The first method used, is the one we have seen during our classes, Mahalanobis distance. 
+```{r Mahalanobis, echo=FALSE}
+library(chemometrics)
+library(ggplot2)
+library(dplyr)
+myoutlier <- Moutlier(knn.imput[,1:27], quantile = 0.975, plot = TRUE)
+myoutlier
+text(myoutlier$rd, labels = rownames(data))
+to_cut <- myoutlier$rd[myoutlier$rd>200]
+abline (h=200, col = "red")
+```
+We have the plots of both: Classican and Robust Mahalanodis distance. From the result obtained, we have a cutoff vale of 6.57, which means the number of the observations we have to remove is very big. Considering that this is very ricky situation we performed another method called Cooks distance. This method was not part of our schedule but yet we decided to include it. Cook's method implements a fitting model and then measures the influence of every observation on the fitted response values. 
+
+```{r Cook Distance}
+cooksdata <- knn.imput[1:27]
+mod1 <- lm(Score ~ ., data=cooksdata)
+cooksd1 <- cooks.distance(mod1)
+plot(cooksd1, pch=".", cex=2, main="score")  # plot cook's distance
+abline(h = 4*mean(cooksd1, na.rm=T), col="red")  # add cutoff line
+text(x=1:length(cooksd1)+1, y=cooksd1, labels=ifelse(cooksd1>4*mean(cooksd1, na.rm=T),row.names(data),""), col="red")  # add labels
+
+
+```
+Now the outliers are more clear. If we compare both methods, we see that they have in common United Kingdom and Lesotho, so these are the options we have to analyze. Lesotho is a country in South Africa, so it might be reasonable to consider it as oulier but regarding United Kingdom we have our own doubts. Our dataset is about economical indexes, so instead of considering UK as outlier, we might be facing a country with very high economical standards. 

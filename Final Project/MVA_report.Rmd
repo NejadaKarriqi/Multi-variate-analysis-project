@@ -1,0 +1,372 @@
+---
+title: "The Index of Economic Freedom"
+author: "Nejada Karriqi, Aitor Ortiz & Meysam Zamani"
+date: "18/06/2019"
+output: pdf_document
+header-includes: \usepackage{xcolor}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+geo.names = c("America", "AsiaPacific", "Europe", "MidEast+NorthAfrica", "SubSaharAfrica")
+
+ext = c(89,99,179)
+mid = c(35,76,175)
+
+#library(xlsx)
+library(DMwR)
+library(mice)
+library(missForest)
+library(chemometrics)
+library(FactoMineR)
+library(corrplot)
+library(rpart)
+library(rpart.plot)
+```
+
+\thispagestyle{empty}  \setcounter{tocdepth}{2}
+\vfill \tableofcontents \vfill
+\pagebreak \setcounter{page}{1}
+
+
+# Introduction
+
+In this section we will explain the basics of the project: the **description** of the problem, our personal **motivation** for the topic and our **main objectives** to achieve.
+
+## Description
+
+*The Heritage Foundation* is a think tank focused towards public policy and it’s known for their distribution of global statistics and political science research.
+One of their most important publications is the annual **Index of Economic Freedom** which will be the basis of our project.
+
+Economic freedom is defined as the “the fundamental right of every human to control his or her own labor and property”. [1]
+The Economic Freedom dataset compiles many economic measures like GDP as well as different expert-crafted “indexes” that sum up fundamental indicators like *fiscal health* of 186 countries.
+
+We have the following variables per country:
+
+* **Indexes** $\Rightarrow$ Economic Freedom, Property Rights, Judicial Effectiveness, Gov Integrity, Tax Burden, Gov Spending, Fiscal Health, Business Freedom, Labor Freedom, Monetary Freedom, Trade Freedom, Investment Freedom and Financial Freedom.
+* **Measures** $\Rightarrow$ Tax Burden, Gov Expenditure, Population, GDP, GDP Growth, PPP, Unemployment, Inflation, FDI and Public Debt.
+* **Others** $\Rightarrow$ Name and Region.
+
+The complete dataset can be found at $\textcolor{blue}{www.heritage.org/index/download}$.
+
+## Motivation
+
+We have chosen this dataset because we’re very interested in understanding how the economy works in different countries and how different factors influence it.
+We’re also curious to know if geographical regions have similar characteristics within them or if there is more variety than meets the eye.
+Each one of us is from a different part of the world and we would like to know which countries may be best end up working in.
+
+Furthermore it’s also a very interesting dataset practically.
+Even though we don’t have many samples (we’re limited by the number of countries), it’s very *high quality* data and its conclusions can be very relevant.
+
+## Objectives
+
+We have two main goals: **(1)** understand the relationships between the different economic indicators of a country (emphasizing *Economic Freedom*) and **(2)** create a model to predict the *georegion* of a country.
+
+With **(1)** we want to apply the **unsupervised** learning techniques explained through the course to our dataset.
+With statistical techniques like *PCA* and *clustering* we want to obtain insights from our data.
+
+On the other hand with **(2)** we want to apply the **supervised** learning techniques to an interesting problem.
+We have *a priori* intuitions about different world regions but we want to see how *real* they are in the data.
+
+\clearpage
+
+# Preprocessing
+
+The original dataset is an $\texttt{Excel}$ spreadsheet so we have used the library `xlsx` to load it.
+Moreover, to convert it into a proper `data.frame`, we've also cleaned string *annotations* in numeric cells by setting those to `NA`.
+
+```{r read.raw.data, include=FALSE}
+#D = head(read.xlsx("index2019_data.xls", 1, as.data.frame = TRUE, stringsAsFactors = FALSE), -1)
+#X = data.frame(D$WEBNAME, row.names = 1)
+#C = seq(7,34)[-19]
+#for(i in C) { X = cbind(X, as.numeric(D[,i])) }
+#colnames(X) = colnames(D)[C]
+#X = cbind(X,D$Region)
+#names(X)[1] = "Score"; names(X)[28] = "Region";
+#names(X) = gsub(".", "", names(X), fixed = TRUE)
+#write.csv(X,"data.csv")
+```
+
+The data cleaning code can be found in `report.Rmd`.
+We will use the clean `data.frame` `X` for all the project.
+
+```{r read.clean.data}
+X = read.csv("C:/Users/nejada/Desktop/MIRI/MVA/Final Project/data.csv", row.names = 1); attach(X);
+```
+
+## Summary
+
+The first step to do once the data is loaded is a preliminar **exploratory analysis**.
+We can see that our dataset contains 186 rows (countries) with 27 numerical features and 1 categorical indicator (georegion).
+
+Instead of going through all the variables we can focus on two of the most interesting ones, `Score` and `Region`.
+
+```{r summary.score, fig.align='center', out.width = '60%'}
+hist(Score, prob=T); curve(dnorm(x, mean(Score,na.rm=T), sd(Score,na.rm=T)), col=2, add=T)
+```
+
+We can see how the Index of Economic Freedom (`Score`) roughly follows a $\mathcal{N}(61,11^2)$.
+On the low extreme we have the outlier `North Korea` while, on the other hand, `Hong Kong` is the most *economically free* country.
+
+```{r summary.region, fig.align='center', out.width = '55%'}
+plot(Region, names.arg = geo.names, cex.names = 0.70)
+```
+<!-- TODO: do we need this plot? is showing t(table(Region)) enough? -->
+Countries are divided in 4 `Region`s with a similar number of components. (except `Middle East & N Africa`)
+
+## Missing Values
+
+Our dataset contains 90 `NA` values distributed among 13 countries.
+To deal with this situation we've decided to **remove countries** with 50% or more `NA`'s and try to **impute the others**.
+
+```{r missing.count}
+t(100*rowSums(is.na(X[!complete.cases(X),]))/ncol(X))
+```
+
+We will remove then `Liechtenstein`, `Somalia` and `Syria`.
+
+```{r remove.missing}
+X = X[!rownames(X) %in% c('Liechtenstein','Somalia','Syria'),]
+```
+
+For the rest of `NA` we've tried 3 of the methods learned in the course `kNN`, `Random Forests` and `MICE`.
+
+```{r impute.missing, warning=FALSE, results="hide"}
+X.knn = knnImputation(X, k = 1, scale = T)
+result.knn = X.knn[!complete.cases(X),]
+X.rf = missForest(X)
+result.rf = X.rf$ximp[!complete.cases(X),]
+X.mice = complete(mice(X, m = 1, printFlag = FALSE, seed = 42))
+result.mice = X.mice[!complete.cases(X),]
+```
+
+
+They all generated different results and, after checking the values, we decided to use `kNN` imputation. our decision was based on the comparison of the predicted values with the real values we found on the internet. An example coult be unemployment because it was missing in many countries: Kosovo has a rate of 30.5% (2017) while we have 22% , 11.2%, 14,9%, Dominica has 23% while we have 18%, 12%, 4.5%. in both cases the value closer to reality corresponds to kNN. Anther reason why we chose kNN is becasue it is very easy to understand. All it does is find the value of the nearest neighbour and copies it in the cell where the value is missing. As far as we know, closer the data points, more similar they are with each other. 
+
+
+```{r finish.missing}
+X = X.knn
+```
+
+## Outliers
+
+Once we've imputed all the missing values we have to deal with the *outliers*.
+In order to the detect them we've used two different methods, **robustified Mahalanobis** and **Cook's distance**.
+
+```{r seed, include = FALSE}
+set.seed(42)
+```
+```{r mahalanobis, fig.align='center', out.width = '75%'}
+mah = Moutlier(X[,1:27], quantile = 0.975, plot = T)
+text(mah$rd, labels = rownames(X))
+text(ext, mah$rd[ext], rownames(X[ext,]), col = "red")
+text(mid, mah$rd[mid], rownames(X[mid,]), col = "orange")
+```
+
+The cutoff value we get from this function is very small, so we decided to ignoe it because out dataset is very small and we don't want to loose information. We can see that **Mahalanobis** roughly gives us 2 groups of outliers, *extreme* like `Libya`, `NorthKorea`, and *mild* like `China`, `UnitedStates` and `India`. We know that China and USA form two of the most powerful global economies, so most probably their high values is not and indicator of being an outlier. For this reason, we decided to try another method to identify the outliers and then compare the resuts. The second method is Cook's distance which detects the point that negatively affect our model. This method fits a regresion model  and combines the measured observation's leverage and residual from the fitted model; higher the observation's leverage and the residual, higher the cook's distance.
+
+
+```{r cook, fig.align='center', out.width = '60%'}
+cook = cooks.distance(lm(Score ~ ., data = X[1:27]))
+plot(cook, pch=".", cex=3, main="Score")
+text(1:length(cook)-17, cook+1, ifelse(cook>3*mean(cook),rownames(X),""), col="orange")
+text(1:length(cook)-17, cook+1, ifelse(cook>5*mean(cook),rownames(X),""), col="red")
+```
+
+As we see from **Cook's** distance shows us again that `NorthKorea`, `Venezuela` and specially `Libya` are *extreme* outliers and `Kiribati` is a *mild* one. So, after running both methodsWe've decided to focus on the *extreme* outliers that appear in both methods and **weight them down**.
+
+```{r weight}
+w = rep(1,nrow(X)); names(w) = rownames(X)
+w["Libya"] = 0.1; w["NorthKorea"] = 0.1; w["Venezuela"] = 0.1
+```
+
+This way we avoid losing all their information but still improve our statistical algorithms performance.
+
+
+## Feature Manipulation
+
+In this section we explain what we've done about feature **selection**, **extraction** and **transformation**.
+
+### Selection
+
+*Feature selection* is used to remove variables that are redundant or completely disconnected with our objectives.
+
+```{r correlation, fig.align='center', out.width = '60%'}
+corrplot(cor(X[,1:27],use="complete.obs"),tl.cex = 0.75)
+```
+
+Computing the correlation matrix is a good way to grasp the relationships of different variables.   
+We've decided that we won't discard any because even if some pairs have $|\rho| \approx 0.9$ they are **not redundant** and they may help to make the exploratory analysis **more interpretable**.
+
+### Extraction
+
+*Feature extraction* is used to derive new variables through domain knowledge or statistical algorithms.
+
+We will extract new variables using PCA that will be used to cluster and interpret the data.
+
+### Transformation
+
+*Feature transformation* modifies existing variables to more friendly distributions for our statistical algorithms.
+
+Besides **standardization** to homogenize the *measurement units* we've performed the following transformation.
+
+```{r transformation, fig.align='center', out.width = '60%', results="hold"}
+par(mfrow=c(1,4))
+hist(X$PopulationMillions,main="",col=2); hist(log(X$PopulationMillions),main="",col=3)
+hist(X$GDPBillionsPPP,main="",col=2); hist(log(X$GDPBillionsPPP),main="",col=3)
+```
+```{r transformation.2, include = FALSE}
+X$PopulationMillions = log(X$PopulationMillions)
+X$GDPBillionsPPP = log(X$GDPBillionsPPP)
+```
+
+`PopulationMillions` and `GDPBillionsPPP` have `China`, `India` and `UnitedStates` that distort exploratory analysis.
+Applying the **logarithm** brings the points closer and creates more *Normal-like* distributions.
+
+# Exploratory Analysis
+
+In this section we will explore our data through the **Principal Components Analysis** and understand it through **clustering**.
+
+## PCA
+
+We want to understand how the different economical indexes and indicators relate with each other.
+Moreover, we will use `Score` as a *supplementary variable* to **understand how it's connected** to them.
+
+```{r old.pca, include = FALSE}
+# PCA(X[,1:13], quanti.sup = c(1), row.w = w)
+# PCA(X[,c(1,14:ncol(X))], quanti.sup = c(1), quali.sup = c(ncol(X)-12), row.w = w)
+```
+```{r pca, fig.align='center', out.width = '80%'}
+P = PCA(X, quanti.sup = c(1), quali.sup = c(28), ncp = 10, graph = F)
+par(mfrow=c(1,2),cex.main=1,cex=0.5,mgp=c(1.2, 0.2, 0),mar=c(2, 2, 2, 0) + 0.1 )
+plot(P,choix = "ind",select= "cos2 50", xlim = c(-10,10), ylim=c(-6,6))
+plot(P,choix="var")
+
+```
+From the individual plot of PCA we can see that the shape is simmilar to Guttman effect. The extreme parts of the graph identify the best economies(left) and the worst ones on the right. The center of the graph shows the countries whose economy is average. 
+From the varible respresentation we see that Score is very correlated to the first dimension and is very good represented in two dimensions. The most correlated variables to are business freedom, investment freedom, labor freedom, financial freedom, property rights and judical effect. Unemployment is completely negatively correlated to Score and the remaining variables have no significant correlation with Score. 
+
+
+We're also interested in checking how many principal components are actually *significant*.   
+We will use the **Kaiser rule** a heuristic that keeps variables with *greater than average eigenvalues*.
+
+```{r pca.components}
+plot(P$eig[,1], type="b"); abline(h = 1, col = "red")
+C = as.data.frame(P$ind$coord[,1:sum(P$eig[,1]>1.0)])
+```
+According to the plot we have 7 significant dimensions but we can only use two for the visual representation, that why we are checking which are the best and the worst represented countries and variables on the two first principal components.
+
+
+```{r}
+best <- sort(apply(P$ind$cos2[,c(1,2)], 1, function(ind) sum(ind)), decreasing=TRUE)[1]
+worst <- sort(apply(P$ind$cos2[,c(1,2)], 1, function(ind) sum(ind)), decreasing=FALSE)[1]
+data.frame(ind=c(names(best), names(worst)), score=c(best, worst), row.names=c("Best represented", "Worst represented"))
+```
+The best represtented individual is Austria and the worst represented is Seychelles. Austria has the highest contribution on the plane construction.
+And the three most influenced individuals in the first and the second components (because they have the highest contribution to the principal components variables) are: NorthKorea, Venezuela and Singapore on the first dimension, and NorthKorea, Venezuela and France on the second dimension.
+
+```{r}
+most.infl.dim1 <- sort(P$ind$contrib[,1], decreasing=TRUE)[1:3]
+most.infl.dim2 <- sort(P$ind$contrib[,2], decreasing=TRUE)[1:3]
+data.frame(indDim1=names(most.infl.dim1), scoreDim1=most.infl.dim1,
+           indDim2=names(most.infl.dim2), scoreDim2=most.infl.dim2, row.names=c(1,2,3))
+```
+We can do the same for variable representation and contribution.
+```{r}
+best <- sort(apply(pca.fm$var$cos2[,c(1,2)], 1, function(var) sum(var)), decreasing=TRUE)[1]
+worst <- sort(apply(pca.fm$var$cos2[,c(1,2)], 1, function(var) sum(var)), decreasing=FALSE)[1]
+data.frame(var=c(names(best), names(worst)), score=c(best, worst), row.names=c("Best represented", "Worst represented"))
+```
+The best and worst represented are PropertyRights and Population.
+
+```{r}
+most.infl.dim1 <- sort(P$var$contrib[,1], decreasing=TRUE)[1:3]
+most.infl.dim2 <- sort(P$var$contrib[,2], decreasing=TRUE)[1:3]
+data.frame(indDim1=names(most.infl.dim1), scoreDim1=most.infl.dim1,
+           indDim2=names(most.infl.dim2), scoreDim2=most.infl.dim2, row.names=c(1,2,3))
+```
+The most influential variables for the first dim are: PropertyRights, GovernmentIntegrity and JudicalEffectiveness and for the second dim: TaxBurden, GovtSpendings and GovtExpendituteofGDP.
+
+####axis rotation
+
+
+<!-- TODO: maybe do the varimax thing? -->
+```{r pca.rot, fig.align='center', out.width = '80%'}
+#nd=7
+#Phi = P$var$coord[,1:nd]
+#pc.rot = varimax(Phi)
+#Psi = P$ind$coord[,1:nd]
+#X = Score; Xs = scale(X)
+#iden = row.names(X); etiq = names(X)
+#Phi.rot = pc.rot$loadings[1:p,]
+#lmb.rot = diag(t(pc.rot$loadings) %*% pc.rot$loadings)
+#sum(lmb.rot); sum(P$eig[1,])
+#Psi_stan.rot = Xs %*% solve(cor(X)) %*% Phi.rot
+#Psi.rot = Psi_stan.rot %*% diag(sqrt(lmb.rot))
+#library(calibrate)
+#ze = rep(0,p)
+#plot(Phi.rot,type="n",xlim=c(-1,1),ylim=c(-1,1))
+#text(Phi.rot,labels=etiq, col="blue")
+#arrows(ze, ze, Phi.rot[,1], Phi.rot[,2], length = 0.07,col="blue")
+#abline(h=0,v=0,col="gray")
+#circle(1)
+#plot(Psi.rot,type="n")
+#text(Psi.rot,labels=iden,col=as.numeric(Score$STATUS))
+#abline(h=0,v=0,col="gray")
+
+
+```
+
+## Clustering
+We will also perfom clustering to identify all the hidden stuructures in our data nad to reduce dimensionality. In this case we will use HCPC because the consolidation is done automatically and since we have performed PCA we will use "ward" because this method is based on minimization of within cluster variance. After clustering the first time, We decided to remove Libya, NorthKorea and Venezuela, our outliers, because they create a meaningless cluster.
+
+```{r clustering}
+C2 = C[!rownames(C) %in% c('Libya','NorthKorea','Venezuela'),] # they create a weird cluster
+cluster<- HCPC(C2,nb.clust=-1,method="ward",consol=TRUE)
+```
+The plot shows 3 main clusters. The first cluster, black color, represents all the countries whose index of freedom and economy is low. These countries mostly represent MidEast+NorthAfrica and SubSaharAfrica. The second cluster, represents the countries whose economy has average index values and the third cluster represents mostly Assia-Pacific and European countries whixh have the best economic indicators. 
+
+
+## Interpretation
+!!! please check this link because i dont get the same result to explain the clusters, instead of variables we get variables, why?  http://www.sthda.com/english/wiki/print.php?id=245
+```{r }
+cluster$data.clust
+cluster$desc.var$quanti
+```
+
+# Methodology
+
+... <!-- TODO: validation discussion -->
+
+# Modelling
+
+... <!-- TODO: intro -->
+
+## Decision Trees
+
+...
+
+```{r decision.trees}
+tree = rpart("Region ~ .", X) # use PCA variables?
+rpart.plot(tree, cex = 0.7)
+```
+
+## Multinomial Logistic Regression
+
+... <!-- TODO: intro + model -->
+
+<!-- TODO: kNN? -->
+
+# Results
+
+...
+
+# Conclusions
+
+...
+
+# References
+
+[1] heritage.org
+[2] https://en.wikipedia.org/wiki/Cook%27s_distance
